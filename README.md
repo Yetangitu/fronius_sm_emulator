@@ -70,6 +70,7 @@ sourced before starting this script or use Environment= entries in a systemd ser
 ```
 
 ### Correction and conversion of readings
+Add the connection details to your MQTT broker - address, username and password. Edit the `MQTT_TOPIC_...` parameters to fit your data source. If you use the included _systemd_ unit file and you copied _fronius_sm_emulator_ to another directory than the one mentioned under `ExecStart=` you'll need to edit that parameter to point to the correct location.
 The `CORRECTION_FACTOR` parameter is used to convert meter readings (often in _kW_/_kWh_/_kVA_/_kVAr/...) to _W_/_Wh (etc.), adjust it when needed.
 As it stands the bridge is made to work in combination with a P1 reader connected to a utility meter (model _Sanxing SX6x1 (SxxU1x)_ which produces `Ascii OBIS` output on the P1 port) which produces two separate readings for active power import and active power export. The SunSpec model used by the Fronius model which this bridge emulates uses a single reading which goes negative when power is exported to the grid. This difference is handled in the `update_datablock()` function:
 ```
