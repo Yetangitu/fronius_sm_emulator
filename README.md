@@ -3,6 +3,9 @@ MQTT to Modbus TCP bridge, emulating a Fronius "Smart Meter"
 
 Emulates a Fronius Smart Meter using a MQTT data source (e.g. a utility meter with a P1 port reader), producing output through Modbus TCP. This 'virtual meter' can be added as a 'Fronius Smart Meter (TCP)' power meter to Fronius inverters, eliminating the need to install a separate smart meter.
 
+![image](https://github.com/user-attachments/assets/0021fcf6-5d76-45a2-af34-cb9f75e87cce)
+![image](https://github.com/user-attachments/assets/519f3a76-b3a0-425c-8732-e8ea7706089b)
+
 ## Installation
 This thing is written in Python and as such liable to be subject to bitrot. As it stands it works in Debian Stable using the following dependencies:
 
