@@ -1,0 +1,30 @@
+[Unit]
+Description = Fronius Smart Meter emulator (MQTT to Modbus TCP bridge)
+
+[Service]
+EnvironmentFile=/etc/default/fronius_sm_emulator
+# ...or use Environment= lines:
+#Environment=MQTT_USERNAME=''
+#Environment=MQTT_PASSWORD=''
+#Environment=MQTT_ADDRESS=''
+#Environment=MQTT_PORT='1883'
+#Environment=MQTT_TOPIC_MOMENTARY_IMPORT='p1-reader-1/sensor/momentary_active_import/state'
+#Environment=MQTT_TOPIC_MOMENTARY_EXPORT='p1-reader-1/sensor/momentary_active_export/state'
+#Environment=MQTT_TOPIC_TOTAL_IMPORT='p1-reader-1/sensor/cumulative_active_import/state'
+#Environment=MQTT_TOPIC_TOTAL_EXPORT='p1-reader-1/sensor/cumulative_active_export/state'
+#Environment=CORRECTION_FACTOR='1000'
+#Environment=MODBUS_PORT='502'
+#Environment=MODBUS_DEVICE_ADDRESS='240'
+#Environment=LOG_LEVEL='ERROR'
+ExecStart=/usr/local/bin/fronius_sm_emulator
+# root is needed when using the default Modbus port (502)
+User=root               
+# The inverter sometimes stops reading meter output after about a day; it shows the meter
+# as being present and responding but stops reading from it. Restarting the
+# bridge restores functionality. Enable the following two lines to have systemd 
+# restart the service after a given interval, default 1 day (1d).
+#Restart=always
+#RuntimeMaxSec=1d
+
+[Install]
+WantedBy = multi-user.target

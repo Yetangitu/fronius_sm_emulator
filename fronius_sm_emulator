@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""
+MQTT to Modbus TCP bridge
+
+Emulates a Fronius Smart Meter using a MQTT data source (e.g. a utility meter
+with a P1 port reader), producing output through Modbus TCP. This 'virtual meter'
+can be added as a 'Fronius Smart Meter (TCP)' power meter to Fronius inverters, eliminating
+the need to install a separate smart meter.
+
+This tool is configured through environment variables:
+
+    MQTT_USERNAME='' # MQTT broker username
+    MQTT_PASSWORD='' # MQTT broker password
+    MQTT_ADDRESS=''  # FQDN or IP address for MQTT broker
+    MQTT_PORT='1883' # 1833 is the default MQTT port
+    # adjust the following MQTT topics to the intended data source
+    MQTT_TOPIC_MOMENTARY_IMPORT='p1-reader-1/sensor/momentary_active_import/state'
+    MQTT_TOPIC_MOMENTARY_EXPORT='p1-reader-1/sensor/momentary_active_export/state'
+    MQTT_TOPIC_TOTAL_IMPORT='p1-reader-1/sensor/cumulative_active_import/state'
+    MQTT_TOPIC_TOTAL_EXPORT='p1-reader-1/sensor/cumulative_active_export/state'
+    CORRECTION_FACTOR='1000'    # correction factor to produce W/Wh for Modbus output
+    MODBUS_PORT='502'           # defaults to 502
+    MODBUS_DEVICE_ADDRESS='240' # defaults to 240
+    LOG_LEVEL='ERROR'           # defaults to 'ERROR'
+
+Add these parameters to an environment file (e.g. /etc/default/fronius_sm_emulator) which is
+sourced before starting this script or use Environment= entries in a systemd service file:
+
+    [Unit]
+    Description = Fronius Smart Meter emulator (MQTT to Modbus TCP bridge)
+    
+    [Service]
+    EnvironmentFile=/etc/default/fronius_sm_emulator
+    # ...or use Environment= lines:
+    #Environment=MQTT_USERNAME=''
+    #Environment=MQTT_PASSWORD=''
+    #Environment=MQTT_ADDRESS=''
+    #Environment=MQTT_PORT='1883'
+    #Environment=MQTT_TOPIC_MOMENTARY_IMPORT='p1-reader-1/sensor/momentary_active_import/state'
+    #Environment=MQTT_TOPIC_MOMENTARY_EXPORT='p1-reader-1/sensor/momentary_active_export/state'
+    #Environment=MQTT_TOPIC_TOTAL_IMPORT='p1-reader-1/sensor/cumulative_active_import/state'
+    #Environment=MQTT_TOPIC_TOTAL_EXPORT='p1-reader-1/sensor/cumulative_active_export/state'
+    #Environment=CORRECTION_FACTOR='1000'
+    #Environment=MODBUS_PORT='502'
+    #Environment=MODBUS_DEVICE_ADDRESS='240'
+    #Environment=LOG_LEVEL='ERROR'
+    ExecStart=/usr/local/bin/fronius_sm_emulator
+    # root is needed when using the default Modbus port (502)
+    User=root
+    
+    [Install]
+    WantedBy = multi-user.target
+
+Modbus data model according to Fronius Meter_Register_Map_Float_v1.0
+Based on https://www.photovoltaikforum.com/thread/185108-fronius-smart-meter-tcp-protokoll
+"""
+
+from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext
+from pymodbus.datastore import ModbusSparseDataBlock
+from pymodbus.transaction import ModbusSocketFramer
+from pymodbus.server import StartTcpServer
+
+import paho.mqtt.subscribe as subscribe
+import paho.mqtt.client as mqtt
+
+import threading
+import logging
+import struct
+import time
+import os
+
+
+# Configuration
+
+mqttconf = {
+    'username': os.getenv('MQTT_USERNAME'),
+    'password': os.getenv('MQTT_PASSWORD'),
+    'address': os.getenv('MQTT_ADDRESS'),
+    'port': int(os.getenv('MQTT_PORT', '1883'))
+}
+
+MQTT_TOPIC_MOMENTARY_IMPORT = os.getenv('MQTT_TOPIC_MOMENTARY_IMPORT')
+MQTT_TOPIC_MOMENTARY_EXPORT = os.getenv('MQTT_TOPIC_MOMENTARY_EXPORT')
+MQTT_TOPIC_TOTAL_IMPORT = os.getenv('MQTT_TOPIC_TOTAL_IMPORT')
+MQTT_TOPIC_TOTAL_EXPORT = os.getenv('MQTT_TOPIC_TOTAL_EXPORT')
+
+CORRECTION_FACTOR = int(os.getenv('CORRECTION_FACTOR', '1000'))
+MODBUS_PORT = os.getenv('MODBUS_PORT', '502')
+MODBUS_DEVICE_ADDRESS = int(os.getenv('MODBUS_DEVICE_ADDRESS','200'))
+
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'ERROR')
+
+
+# Globals
+
+momentary_import = '0'
+momentary_export = '0'
+total_export = "0"
+total_import = "0"
+
+flag_connected = 0
+
+imp_int1 = "0"
+imp_int2 = "0"
+exp_int1 = "0"
+exp_int2 = "0"
+ep_int1 = "0"
+ep_int2 = "0"
+
+lock = threading.Lock()
+
+# logging
+
+logging.basicConfig()
+log = logging.getLogger()
+log.setLevel(LOG_LEVEL)
+
+
+# MQTT
+
+# paho v2 introduces versioned callbacks
+#mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1,"SmartMeter")
+# paho v1:
+mqttc = mqtt.Client("SmartMeter")
+mqttc.clean_session=False
+mqttc.username_pw_set(mqttconf['username'], mqttconf['password'])
+mqttc.connect(mqttconf['address'], mqttconf['port'], 60)
+
+mqttc.subscribe(MQTT_TOPIC_MOMENTARY_IMPORT)
+mqttc.subscribe(MQTT_TOPIC_MOMENTARY_EXPORT)
+mqttc.subscribe(MQTT_TOPIC_TOTAL_IMPORT)
+mqttc.subscribe(MQTT_TOPIC_TOTAL_EXPORT)
+
+def on_connect(client, userdata, flags, rc):
+   global flag_connected
+   flag_connected = 1
+   log.info('MQTT connected')
+
+def on_disconnect(client, userdata, rc):
+   global flag_connected
+   flag_connected = 0
+   lmg.info('Unexpected MQTT disconnection')
+
+def on_message(client, userdata, message):
+    global momentary_import
+    global momentary_export
+    global total_export
+    global total_import
+
+    log.debug(f'MQTT: {message.payload=}, {message.topic=}, {message.qos=}')
+    
+    lock.acquire()
+
+    if message.topic == MQTT_TOPIC_MOMENTARY_IMPORT:
+       momentary_import = float(message.payload)
+    elif message.topic == MQTT_TOPIC_MOMENTARY_EXPORT:
+        momentary_export = float(message.payload)
+    elif message.topic == MQTT_TOPIC_TOTAL_IMPORT:
+        total_import = float(message.payload)
+    elif message.topic == MQTT_TOPIC_TOTAL_EXPORT:
+        total_export = float(message.payload)
+
+    lock.release()
+
+mqttc.on_connect = on_connect
+mqttc.on_disconnect = on_disconnect
+mqttc.on_message = on_message
+
+mqttc.loop_start()
+
+
+# Modbus
+
+def float_to_reg2(value):
+    if value == 0:
+        int1 = 0
+        int2 = 0
+    else:
+        value_hex = hex(struct.unpack('<I', struct.pack('<f', value))[0])
+        value_hex_part1 = str(value_hex)[2:6]
+        value_hex_part2 = str(value_hex)[6:10]
+        int1 = int(value_hex_part1, 16)
+        int2 = int(value_hex_part2, 16)
+
+        return int1,int2
+
+def update_datablock(mb_context):
+    lock.acquire()
+
+    total_import_corr = float(total_import)*CORRECTION_FACTOR
+    total_export_corr = float(total_export)*CORRECTION_FACTOR
+    electrical_power_corr = float(momentary_import - momentary_export)*CORRECTION_FACTOR
+
+    log.debug(f'MODBUS: {total_import_corr=}, {total_export_corr=}, {electrical_power_corr=}')
+
+    ep_int1,ep_int2 = float_to_reg2(electrical_power_corr)
+    imp_int1,imp_int2 = float_to_reg2(total_import_corr)
+    exp_int1,exp_int2 = float_to_reg2(total_export_corr)
+
+    context = mb_context[0]
+    register = 3
+    slave_id = 0x01
+    address = 0x9C87
+    values = [
+        0, 0,               # Ampere - AC Total Current Value [A]
+        0, 0,               # Ampere - AC Current Value L1 [A]
+        0, 0,               # Ampere - AC Current Value L2 [A]
+        0, 0,               # Ampere - AC Current Value L3 [A]
+        0, 0,               # Voltage - Average Phase to Neutral [V]
+        0, 0,               # Voltage - Phase L1 to Neutral [V]
+        0, 0,               # Voltage - Phase L2 to Neutral [V]
+        0, 0,               # Voltage - Phase L3 to Neutral [V]
+        0, 0,               # Voltage - Average Phase to Phase [V]
+        0, 0,               # Voltage - Phase L1 to L2 [V]
+        0, 0,               # Voltage - Phase L2 to L3 [V]
+        0, 0,               # Voltage - Phase L1 to L3 [V]
+        0, 0,               # AC Frequency [Hz]
+        ep_int1, 0,         # AC Power value (Total) [W] ==> Second hex word not needed
+        0, 0,               # AC Power Value L1 [W]
+        0, 0,               # AC Power Value L2 [W]
+        0, 0,               # AC Power Value L3 [W]
+        0, 0,               # AC Apparent Power [VA]
+        0, 0,               # AC Apparent Power L1 [VA]
+        0, 0,               # AC Apparent Power L2 [VA]
+        0, 0,               # AC Apparent Power L3 [VA]
+        0, 0,               # AC Reactive Power [VAr]
+        0, 0,               # AC Reactive Power L1 [VAr]
+        0, 0,               # AC Reactive Power L2 [VAr]
+        0, 0,               # AC Reactive Power L3 [VAr]
+        0, 0,	            # AC power factor total [cosphi]
+        0, 0,               # AC power factor L1 [cosphi]
+        0, 0,               # AC power factor L2 [cosphi]
+        0, 0,               # AC power factor L3 [cosphi]
+        exp_int1, exp_int2, # Total Watt Hours Exported [Wh]
+        0, 0,               # Watt Hours Exported L1 [Wh]
+        0, 0,               # Watt Hours Exported L2 [Wh]
+        0, 0,               # Watt Hours Exported L3 [Wh]
+        imp_int1, imp_int2, # Total Watt Hours Imported [Wh]
+        0, 0,               # Watt Hours Imported L1 [Wh]
+        0, 0,               # Watt Hours Imported L2 [Wh]
+        0, 0,               # Watt Hours Imported L3 [Wh]
+        0, 0,               # Total VA hours Exported [VA]
+        0, 0,               # VA hours Exported L1 [VA]
+        0, 0,               # VA hours Exported L2 [VA]
+        0, 0,               # VA hours Exported L3 [VA]
+        0, 0,               # Total VAr hours imported [VAr]
+        0, 0,               # VA hours imported L1 [VAr]
+        0, 0,               # VA hours imported L2 [VAr]
+        0, 0                # VA hours imported L3 [VAr]
+    ]
+
+    context.setValues(register, address, values)
+    lock.release()
+
+
+# Timer
+
+class IntervalTimer(object):
+    def __init__(self, interval, function, *args, **kwargs):
+        self._timer     = None
+        self.interval   = interval
+        self.function   = function
+        self.args       = args
+        self.kwargs     = kwargs
+        self.is_running = False
+        self.start()
+
+    def _run(self):
+        self.is_running = False
+        self.start()
+        self.function(*self.args, **self.kwargs)
+
+    def start(self):
+        if not self.is_running:
+            self._timer = threading.Timer(self.interval, self._run)
+            self._timer.start()
+            self.is_running = True
+
+    def stop(self):
+        self._timer.cancel()
+        self.is_running = False
+
+def run_modbus_server():
+    lock.acquire()
+
+    # data model according to Fronius Meter_Register_Map_Float_v1.0
+    datablock = ModbusSparseDataBlock({
+
+        40001: [21365, 28243],                                         # 0x53756e53 ("SunS")
+        40003: [1],                                                    # Sunspec ID: 1
+        40004: [65],                                                   # register count: 65
+        40005: [70,114,111,110,105,117,115,0,0,0,0,0,0,0,0,0,          # Manufacturer "Fronius"
+                83,109,97,114,116,32,77,101,116,101,114,32,54,51,65,0, # Device Model: "Smart Meter 63A"
+                0,0,0,0,0,0,0,0,                                       # Options N/A
+                0,0,0,0,0,0,0,0,                                       # Software Version  N/A
+                48,48,48,48,48,48,48,49,0,0,0,0,0,0,0,0,               # Serial Number: 00000001
+                MODBUS_DEVICE_ADDRESS],                                # Modbus TCP device address
+        40070: [213],                                                  # Sunspec 3-phase meter: 213
+        40071: [124],                                                  # register count: 124
+        40072: [0,0,0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,0,0,
+                0,0,0,0],
+
+        40196: [65535, 0],                                             # 0xFFFF - end block
+    })
+
+    model=ModbusSlaveContext(hr=datablock)
+
+    mb_context = ModbusServerContext(slaves=model, single=True)
+
+    lock.release()
+
+    INTERVAL = 5
+    interval_timer = IntervalTimer(INTERVAL, update_datablock, mb_context)
+
+    log.info(f'Starting Modbus server on port {MODBUS_PORT}')
+    address = ("", MODBUS_PORT)
+    StartTcpServer(
+            context=mb_context,  
+            address=address,
+            framer=ModbusSocketFramer,
+            allow_reuse_address=True,
+        )
+
+values_ready = False
+
+while not values_ready:
+      log.info('Waiting for data from MQTT Broker')
+      time.sleep(1)
+      lock.acquire()
+      if total_import  != '0' and total_export != '0':
+         log.info('Data available')
+         values_ready = True
+      lock.release()
+
+run_modbus_server()
