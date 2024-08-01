@@ -2,7 +2,7 @@
 Description = Fronius Smart Meter emulator (MQTT to Modbus TCP bridge)
 
 [Service]
-EnvironmentFile=/etc/default/fronius_sm_emulator
+#EnvironmentFile=/etc/default/fronius_sm_emulator
 # ...or use Environment= lines:
 #Environment=MQTT_USERNAME=''
 #Environment=MQTT_PASSWORD=''

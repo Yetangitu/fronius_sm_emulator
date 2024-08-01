@@ -11,7 +11,7 @@ This thing is written in Python and as such liable to be subject to bitrot. As i
 
 If you happen to have `paho-mqtt` v2 installed you'll need to edit `fronius_sm_emulator` to comment out the call to mqtt.Client and remove the `#` from the line above it since the call signature changed.
 
-Copy `fronius_sm_emulator` to a directory of choice - `/usr/local/bin` comes to mind - and make sure the file is executable. If you use _systemd_ you can use the included unit file (`fronius_sm_emulator.service`) by copying it to `/etc/systemd/system`. Edit it to configure the `Environment=` lines to your installation or copy and edit the environment file (`fronius_sm_emulator.env) to `/etc/defaults/fronius_sm_emulator` and enable the `EnvironmentFile=/etc/default/fronius_sm_emulator` line.
+Copy `fronius_sm_emulator` to a directory of choice - `/usr/local/bin` comes to mind - and make sure the file is executable. If you use _systemd_ you can use the included unit file (`fronius_sm_emulator.service`) by copying it to `/etc/systemd/system`. Edit it to configure the `Environment=` lines to your installation or copy and edit the environment file (`fronius_sm_emulator.env`) to `/etc/defaults/fronius_sm_emulator` and enable the `EnvironmentFile=/etc/default/fronius_sm_emulator` line.
 
 ## Configuration
 
@@ -41,7 +41,7 @@ sourced before starting this script or use Environment= entries in a systemd ser
     Description = Fronius Smart Meter emulator (MQTT to Modbus TCP bridge)
     
     [Service]
-    EnvironmentFile=/etc/default/fronius_sm_emulator
+    #EnvironmentFile=/etc/default/fronius_sm_emulator
     # ...or use Environment= lines:
     #Environment=MQTT_USERNAME=''
     #Environment=MQTT_PASSWORD=''
