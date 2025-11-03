@@ -47,6 +47,13 @@ sourced before starting this script or use Environment= entries in a systemd ser
     ExecStart=/usr/local/bin/fronius_sm_emulator
     # root is needed when using the default Modbus port (502)
     User=root
+    # The inverter sometimes stops reading meter output after about a day; it shows the meter
+    # as being present and responding but stops reading from it. Restarting the
+    # bridge restores functionality. Enable the following two lines to have systemd 
+    # restart the service after a given interval, default 1 day (1d).
+    #Restart=always
+    #RuntimeMaxSec=1d
+
     
     [Install]
     WantedBy = multi-user.target
@@ -57,7 +64,7 @@ Based on https://www.photovoltaikforum.com/thread/185108-fronius-smart-meter-tcp
 
 from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext
 from pymodbus.datastore import ModbusSparseDataBlock
-from pymodbus.transaction import ModbusSocketFramer
+from pymodbus.framer import FramerSocket
 from pymodbus.server import StartTcpServer
 
 import paho.mqtt.subscribe as subscribe
@@ -119,24 +126,24 @@ log.setLevel(LOG_LEVEL)
 # MQTT
 
 # paho v2 introduces versioned callbacks
-#mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1,"SmartMeter")
+mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,"SmartMeter")
 # paho v1:
-mqttc = mqtt.Client("SmartMeter")
+# mqttc = mqtt.Client("SmartMeter")
 mqttc.clean_session=False
 mqttc.username_pw_set(mqttconf['username'], mqttconf['password'])
 mqttc.connect(mqttconf['address'], mqttconf['port'], 60)
 
-mqttc.subscribe(MQTT_TOPIC_MOMENTARY_IMPORT)
-mqttc.subscribe(MQTT_TOPIC_MOMENTARY_EXPORT)
-mqttc.subscribe(MQTT_TOPIC_TOTAL_IMPORT)
-mqttc.subscribe(MQTT_TOPIC_TOTAL_EXPORT)
+mqttc.subscribe((str(MQTT_TOPIC_MOMENTARY_IMPORT), 0))
+mqttc.subscribe((str(MQTT_TOPIC_MOMENTARY_EXPORT), 0))
+mqttc.subscribe((str(MQTT_TOPIC_TOTAL_IMPORT), 0))
+mqttc.subscribe((str(MQTT_TOPIC_TOTAL_EXPORT), 0))
 
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, rc, properties):
    global flag_connected
    flag_connected = 1
    log.info('MQTT connected')
 
-def on_disconnect(client, userdata, rc):
+def on_disconnect(client, userdata, rc, properties):
    global flag_connected
    flag_connected = 0
    lmg.info('Unexpected MQTT disconnection')
@@ -327,9 +334,7 @@ def run_modbus_server():
     address = ("", MODBUS_PORT)
     StartTcpServer(
             context=mb_context,  
-            address=address,
-            framer=ModbusSocketFramer,
-            allow_reuse_address=True,
+            address=address
         )
 
 values_ready = False
