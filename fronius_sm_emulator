@@ -179,7 +179,7 @@ mqttc.loop_start()
 # Modbus
 
 def float_to_reg2(value):
-    if value == 0:
+    if value == 0 or value is None:
         int1 = 0
         int2 = 0
     else:
@@ -189,7 +189,7 @@ def float_to_reg2(value):
         int1 = int(value_hex_part1, 16)
         int2 = int(value_hex_part2, 16)
 
-        return int1,int2
+    return int1,int2
 
 def update_datablock(mb_context):
     lock.acquire()
